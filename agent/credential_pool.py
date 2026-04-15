@@ -162,7 +162,58 @@ class PooledCredential:
     def runtime_api_key(self) -> str:
         if self.provider == "nous":
             return str(self.agent_key or self.access_token or "")
+        if self.provider == "copilot":
+            return self._copilot_session_token()
         return str(self.access_token or "")
+
+    def _copilot_session_token(self) -> str:
+        """Exchange the stored GitHub token for a Copilot session token.
+
+        Caches the result and reuses it until 5 minutes before expiry.
+        """
+        import json as _json, time as _time, re as _re, urllib.request as _urllib_request, logging as _logging
+        _logger = _logging.getLogger(__name__)
+        cache_path = os.path.join(
+            os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
+            "copilot_session_cache.json",
+        )
+        # Check cache
+        try:
+            with open(cache_path) as f:
+                cache = _json.load(f)
+            if cache.get("expires_at", 0) - _time.time() > 300:
+                return cache["token"]
+        except Exception:
+            pass
+        # Exchange
+        github_token = str(self.access_token or "")
+        if not github_token:
+            return ""
+        try:
+            req = _urllib_request.Request(
+                "https://api.github.com/copilot_internal/v2/token",
+                headers={
+                    "Authorization": f"Bearer {github_token}",
+                    "Accept": "application/json",
+                    "User-Agent": "HermesAgent/1.0",
+                },
+            )
+            with _urllib_request.urlopen(req, timeout=15) as resp:
+                data = _json.loads(resp.read().decode())
+            session_token = data.get("token", "")
+            if not session_token:
+                _logger.warning("Copilot token exchange returned empty token")
+                return github_token
+            expires_at = data.get("expires_at", int(_time.time()) + 1800)
+            if isinstance(expires_at, str):
+                expires_at = int(expires_at)
+            with open(cache_path, "w") as f:
+                _json.dump({"token": session_token, "expires_at": expires_at}, f)
+            _logger.info("Copilot session token exchanged and cached")
+            return session_token
+        except Exception as exc:
+            _logger.warning("Copilot token exchange failed: %s", exc)
+            return github_token
 
     @property
     def runtime_base_url(self) -> Optional[str]:
@@ -764,6 +815,8 @@ class CredentialPool:
             # runtime credentials are actually resolved, not merely when the pool
             # is enumerated for listing, migration, or selection.
             return False
+        if self.provider == "copilot":
+            return False
         return False
 
     def select(self) -> Optional[PooledCredential]:
@@ -1241,6 +1294,23 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "base_url": "https://chatgpt.com/backend-api/codex",
                     "last_refresh": state.get("last_refresh"),
                     "label": label_from_token(tokens.get("access_token", ""), "device_code"),
+                },
+            )
+
+    elif provider == "copilot":
+        state = _load_provider_state(auth_store, "copilot")
+        if isinstance(state, dict) and state.get("access_token"):
+            active_sources.add("device_code")
+            changed |= _upsert_entry(
+                entries,
+                provider,
+                "device_code",
+                {
+                    "source": "device_code",
+                    "auth_type": AUTH_TYPE_OAUTH,
+                    "access_token": state.get("access_token", ""),
+                    "base_url": state.get("base_url", "https://api.githubcopilot.com"),
+                    "label": "copilot-oauth",
                 },
             )
 

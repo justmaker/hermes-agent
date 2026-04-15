@@ -33,7 +33,7 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
+_OAUTH_CAPABLE_PROVIDERS = {"nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "copilot"}
 
 
 def _get_custom_provider_names() -> list:
@@ -148,7 +148,7 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli", "copilot"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
 
@@ -275,6 +275,28 @@ def auth_add_command(args) -> None:
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
         return
 
+    if provider == "copilot":
+        from hermes_cli.copilot_auth import copilot_device_code_login
+        print("Logging into GitHub Copilot via device code flow...")
+        github_token = copilot_device_code_login()
+        if not github_token:
+            raise SystemExit("GitHub Copilot OAuth login failed or was cancelled.")
+        label = (getattr(args, "label", None) or "").strip() or _oauth_default_label(provider, len(pool.entries()) + 1)
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:device_code",
+            access_token=github_token,
+            refresh_token=None,
+            base_url="https://api.githubcopilot.com",
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
     if provider == "qwen-oauth":
         creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
@@ -352,7 +374,7 @@ def auth_remove_command(args) -> None:
     # If this was a singleton-seeded credential (OAuth device_code, hermes_pkce),
     # clear the underlying auth store / credential file so it doesn't get
     # re-seeded on the next load_pool() call.
-    elif removed.source == "device_code" and provider in ("openai-codex", "nous"):
+    elif removed.source == "device_code" and provider in ("openai-codex", "nous", "copilot"):
         from hermes_cli.auth import (
             _load_auth_store, _save_auth_store, _auth_store_lock,
         )
