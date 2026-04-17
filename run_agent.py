@@ -11062,7 +11062,18 @@ class AIAgent:
                                    ". No fallback providers configured.")
                             )
 
-                        final_response = "(empty)"
+                        if reasoning_text:
+                            final_response = (
+                                "⚠️ The model produced reasoning but no visible response. "
+                                "This usually means the model got stuck. Try sending your "
+                                "message again, or use /reset to start fresh."
+                            )
+                        else:
+                            final_response = (
+                                "⚠️ The model returned an empty response (no content or "
+                                "reasoning). This may indicate an authentication or API "
+                                "issue. Try again, or use /reset to start a fresh session."
+                            )
                         break
                     
                     # Reset retry counter/signature on successful content

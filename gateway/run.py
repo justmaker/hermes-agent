@@ -3938,11 +3938,11 @@ class GatewayRunner:
             # produce visible content after exhausting all retries (nudge,
             # prefill, empty-retry, fallback).  Sending the raw sentinel
             # looks like a bug; a short explanation is more helpful.
-            if response == "(empty)":
+            if response.strip() == "(empty)":
                 response = (
-                    "⚠️ The model returned no response after processing tool "
-                    "results. This can happen with some models — try again or "
-                    "rephrase your question."
+                    "⚠️ The model returned an empty response (no content or "
+                    "reasoning). This may indicate an authentication or API "
+                    "issue. Try again, or use /reset to start a fresh session."
                 )
             agent_messages = agent_result.get("messages", [])
             _response_time = time.time() - _msg_start_time
@@ -8913,8 +8913,12 @@ class GatewayRunner:
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
-            if not final_response:
-                error_msg = f"⚠️ {result['error']}" if result.get("error") else ""
+            if not final_response or (isinstance(final_response, str) and final_response.strip() == "(empty)"):
+                error_msg = f"⚠️ {result['error']}" if result.get("error") else (
+                    "⚠️ The model returned an empty response (no content or "
+                    "reasoning). This may indicate an authentication or API "
+                    "issue. Try again, or use /reset to start a fresh session."
+                )
                 return {
                     "final_response": error_msg,
                     "messages": result.get("messages", []),
