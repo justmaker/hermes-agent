@@ -7532,6 +7532,50 @@ class GatewayRunner:
             return prefix
         return user_text
 
+    async def _enrich_pending_event(self, event: "MessageEvent") -> str | None:
+        """Enrich a queued pending event with vision/STT, mirroring inbound preprocessing.
+
+        Returns the enriched text string, or None if the event has no usable content.
+        """
+        from gateway.platforms.base import MessageType
+
+        text = event.text or ""
+
+        if not text and not event.media_urls:
+            return None
+
+        # Classify media URLs into image and audio paths
+        image_paths: list[str] = []
+        audio_paths: list[str] = []
+        if event.media_urls:
+            for i, path in enumerate(event.media_urls):
+                mtype = event.media_types[i] if i < len(getattr(event, "media_types", []) or []) else ""
+                if mtype.startswith("image/") or event.message_type == MessageType.PHOTO:
+                    image_paths.append(path)
+                if mtype.startswith("audio/") or event.message_type in (MessageType.VOICE, MessageType.AUDIO):
+                    audio_paths.append(path)
+
+        # If no text and no classified media, build a placeholder
+        if not text and not image_paths and not audio_paths:
+            text = _build_media_placeholder(event)
+            return text or None
+
+        # Run vision enrichment for images
+        if image_paths:
+            try:
+                text = await self._enrich_message_with_vision(text, image_paths)
+            except Exception as e:
+                logger.error("Vision enrichment on pending event failed: %s", e)
+
+        # Run STT enrichment for audio
+        if audio_paths:
+            try:
+                text = await self._enrich_message_with_transcription(text, audio_paths)
+            except Exception as e:
+                logger.error("STT enrichment on pending event failed: %s", e)
+
+        return text or None
+
     def _build_process_event_source(self, evt: dict):
         """Resolve the canonical source for a synthetic background-process event.
 
@@ -9359,8 +9403,9 @@ class GatewayRunner:
                 if result.get("interrupted") and not pending_event and result.get("interrupt_message"):
                     pending = result.get("interrupt_message")
                 elif pending_event:
-                    pending = pending_event.text or _build_media_placeholder(pending_event)
-                    logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
+                    pending = await self._enrich_pending_event(pending_event)
+                    if pending:
+                        logger.debug("Processing queued message after agent completion: '%s...'", pending[:40])
 
             # Safety net: if the pending text is a slash command (e.g. "/stop",
             # "/new"), discard it — commands should never be passed to the agent
