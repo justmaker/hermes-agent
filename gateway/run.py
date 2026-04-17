@@ -4248,7 +4248,7 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
-    def _format_session_info(self) -> str:
+    def _format_session_info(self, model_override: dict = None) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
@@ -4258,6 +4258,9 @@ class GatewayRunner:
         from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
+        # Apply model override if provided (e.g. from /model command)
+        if model_override:
+            model = model_override.get("model", model)
         config_context_length = None
         provider = None
         base_url = None
@@ -4373,9 +4376,10 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
-        # Clear any session-scoped model override so the next agent picks up
-        # the configured default instead of the previously switched model.
-        self._session_model_overrides.pop(session_key, None)
+        # Keep any session-scoped model override so the user's /model choice
+        # survives across resets — they explicitly picked it.
+        # self._session_model_overrides.pop(session_key, None)  # preserved intentionally
+        _model_override = self._session_model_overrides.get(session_key)
 
         # Fire plugin on_session_finalize hook (session boundary)
         try:
@@ -4402,12 +4406,14 @@ class GatewayRunner:
 
         # Resolve session config info to surface to the user
         try:
-            session_info = self._format_session_info()
+            session_info = self._format_session_info(model_override=_model_override)
         except Exception:
             session_info = ""
 
         if new_entry:
             header = "✨ Session reset! Starting fresh."
+            if _model_override:
+                header += " (model override preserved)"
         else:
             # No existing session, just create one
             new_entry = self.session_store.get_or_create_session(source, force_new=True)
