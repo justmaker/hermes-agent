@@ -1720,6 +1720,9 @@ def probe_api_models(
             "resolved_base_url": "",
             "suggested_base_url": None,
             "used_fallback": False,
+            "error_kind": "missing-base-url",
+            "error_detail": None,
+            "status_code": None,
         }
 
     if _is_github_models_base_url(normalized):
@@ -1748,6 +1751,10 @@ def probe_api_models(
     if normalized.startswith(COPILOT_BASE_URL):
         headers.update(copilot_default_headers())
 
+    last_error_kind: Optional[str] = None
+    last_error_detail: Optional[str] = None
+    last_status_code: Optional[int] = None
+
     for candidate_base, is_fallback in candidates:
         url = candidate_base.rstrip("/") + "/models"
         tried.append(url)
@@ -1761,8 +1768,32 @@ def probe_api_models(
                     "resolved_base_url": candidate_base.rstrip("/"),
                     "suggested_base_url": alternate_base if alternate_base != candidate_base else normalized,
                     "used_fallback": is_fallback,
+                    "error_kind": None,
+                    "error_detail": None,
+                    "status_code": getattr(resp, "status", None),
                 }
-        except Exception:
+        except urllib.error.HTTPError as e:
+            last_status_code = e.code
+            if e.code in {401, 403}:
+                last_error_kind = "auth"
+            else:
+                last_error_kind = "http"
+            try:
+                last_error_detail = e.read().decode(errors="replace")[:300]
+            except Exception:
+                last_error_detail = str(e)
+            continue
+        except urllib.error.URLError as e:
+            last_error_kind = "network"
+            last_error_detail = str(e.reason)
+            continue
+        except TimeoutError as e:
+            last_error_kind = "timeout"
+            last_error_detail = str(e)
+            continue
+        except Exception as e:
+            last_error_kind = "unknown"
+            last_error_detail = str(e)
             continue
 
     return {
@@ -1771,6 +1802,9 @@ def probe_api_models(
         "resolved_base_url": normalized,
         "suggested_base_url": alternate_base if alternate_base != normalized else None,
         "used_fallback": False,
+        "error_kind": last_error_kind,
+        "error_detail": last_error_detail,
+        "status_code": last_status_code,
     }
 
 
@@ -2079,7 +2113,8 @@ def validate_requested_model(
             }
 
     # Probe the live API to check if the model actually exists
-    api_models = fetch_api_models(api_key, base_url)
+    probe = probe_api_models(api_key, base_url)
+    api_models = probe.get("models")
 
     if api_models is not None:
         if requested_for_lookup in set(api_models):
@@ -2162,6 +2197,21 @@ def validate_requested_model(
             pass  # Fall through to generic warning
 
     provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+    error_kind = probe.get("error_kind")
+    status_code = probe.get("status_code")
+
+    if error_kind == "auth":
+        detail = f" (HTTP {status_code})" if status_code else ""
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Could not validate `{requested}` against the {provider_label} model listing{detail} due to authentication or permission limits. "
+                f"The model may still work if your account has runtime access."
+            ),
+        }
+
     return {
         "accepted": True,
         "persist": True,
